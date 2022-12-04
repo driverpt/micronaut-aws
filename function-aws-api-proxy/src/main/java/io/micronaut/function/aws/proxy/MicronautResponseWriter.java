@@ -104,12 +104,13 @@ public class MicronautResponseWriter extends ResponseWriter<MicronautAwsProxyRes
             );
         }
 
-        if (containerResponse.getAwsProxyRequest().getRequestSource() == AwsProxyRequest.RequestSource.ALB) {
-            final HttpStatus status = containerResponse.getStatus();
-            awsProxyResponse.setStatusDescription(
-                    status + " " +
-                            Response.Status.fromStatusCode(status.getCode()).getReasonPhrase());
-        }
+        awsProxyResponse.setStatusDescription();
+//        if (containerResponse.getAwsProxyRequest().getRequestSource() == AwsProxyRequest.RequestSource.ALB) {
+//            final HttpStatus status = containerResponse.getStatus();
+//            awsProxyResponse.setStatusDescription(
+//                    status + " " +
+//                            Response.Status.fromStatusCode(status.getCode()).getReasonPhrase());
+//        }
 
         Timer.stop(TIMER_NAME);
         return awsProxyResponse;

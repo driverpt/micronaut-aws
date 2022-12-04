@@ -16,6 +16,7 @@
 package io.micronaut.function.aws.proxy;
 
 import com.amazonaws.serverless.proxy.internal.SecurityUtils;
+import com.amazonaws.serverless.proxy.internal.jaxrs.AwsHttpApiV2SecurityContext;
 import com.amazonaws.serverless.proxy.internal.jaxrs.AwsProxySecurityContext;
 import com.amazonaws.serverless.proxy.model.*;
 import com.amazonaws.services.lambda.runtime.Context;
@@ -50,19 +51,11 @@ import static com.amazonaws.serverless.proxy.RequestReader.*;
  * @author graemerocher
  * @since 1.1
  */
-public class MicronautAwsProxyRequest<T> implements HttpRequest<T> {
-    private static final String HEADER_KEY_VALUE_SEPARATOR = "=";
-    private static final String CF_PROTOCOL_HEADER_NAME = "CloudFront-Forwarded-Proto";
-    private static final String PROTOCOL_HEADER_NAME = "X-Forwarded-Proto";
+public abstract class MicronautAwsProxyRequest<Req, T> implements HttpRequest<T> {
+    public static final String HEADER_KEY_VALUE_SEPARATOR = "=";
+    public static final String CF_PROTOCOL_HEADER_NAME = "CloudFront-Forwarded-Proto";
+    public static final String PROTOCOL_HEADER_NAME = "X-Forwarded-Proto";
 
-    private final AwsProxyRequest awsProxyRequest;
-    private final HttpMethod httpMethod;
-    private final MutableConvertibleValues<Object> attributes = new MutableConvertibleValuesMap<>();
-    private final HttpHeaders headers;
-    private final HttpParameters parameters;
-    private final String path;
-    private final ContainerConfig config;
-    private Cookies cookies;
     private MicronautAwsProxyResponse<?> response;
     private T decodedBody;
 
@@ -75,35 +68,35 @@ public class MicronautAwsProxyRequest<T> implements HttpRequest<T> {
      * @param lambdaContext   The lambda context
      * @param config          The container configuration
      */
-    MicronautAwsProxyRequest(
-            String path,
-            AwsProxyRequest awsProxyRequest,
-            SecurityContext securityContext,
-            Context lambdaContext,
-            ContainerConfig config) {
-        this.config = config;
-        this.awsProxyRequest = awsProxyRequest;
-        this.path = path;
-        final String httpMethod = awsProxyRequest.getHttpMethod();
-        this.httpMethod = StringUtils.isNotEmpty(httpMethod) ? HttpMethod.valueOf(httpMethod) : HttpMethod.GET;
-        final Headers multiValueHeaders = awsProxyRequest.getMultiValueHeaders();
-        this.headers = multiValueHeaders != null ? new AwsHeaders() : new SimpleHttpHeaders(ConversionService.SHARED);
-        final MultiValuedTreeMap<String, String> params = awsProxyRequest.getMultiValueQueryStringParameters();
-        this.parameters = params != null ? new AwsParameters() : new SimpleHttpParameters(ConversionService.SHARED);
-
-        final AwsProxyRequestContext requestContext = awsProxyRequest.getRequestContext();
-        setAttribute(API_GATEWAY_CONTEXT_PROPERTY, requestContext);
-        setAttribute(API_GATEWAY_STAGE_VARS_PROPERTY, awsProxyRequest.getStageVariables());
-        setAttribute(API_GATEWAY_EVENT_PROPERTY, awsProxyRequest);
-        if (requestContext != null) {
-            setAttribute(ALB_CONTEXT_PROPERTY, requestContext.getElb());
-        }
-        setAttribute(LAMBDA_CONTEXT_PROPERTY, lambdaContext);
-        setAttribute(JAX_SECURITY_CONTEXT_PROPERTY, config);
-        if (isSecurityContextPresent (securityContext)) {
-            setAttribute("micronaut.AUTHENTICATION", securityContext.getUserPrincipal());
-        }
-    }
+//    MicronautAwsProxyRequest(
+//            String path,
+//            AwsProxyRequest awsProxyRequest,
+//            SecurityContext securityContext,
+//            Context lambdaContext,
+//            ContainerConfig config) {
+//        this.config = config;
+//        this.awsProxyRequest = awsProxyRequest;
+//        this.path = path;
+//        final String httpMethod = awsProxyRequest.getHttpMethod();
+//        this.httpMethod = StringUtils.isNotEmpty(httpMethod) ? HttpMethod.valueOf(httpMethod) : HttpMethod.GET;
+//        final Headers multiValueHeaders = awsProxyRequest.getMultiValueHeaders();
+//        this.headers = multiValueHeaders != null ? new AwsHeaders() : new SimpleHttpHeaders(ConversionService.SHARED);
+//        final MultiValuedTreeMap<String, String> params = awsProxyRequest.getMultiValueQueryStringParameters();
+//        this.parameters = params != null ? new AwsParameters() : new SimpleHttpParameters(ConversionService.SHARED);
+//
+//        final AwsProxyRequestContext requestContext = awsProxyRequest.getRequestContext();
+//        setAttribute(API_GATEWAY_CONTEXT_PROPERTY, requestContext);
+//        setAttribute(API_GATEWAY_STAGE_VARS_PROPERTY, awsProxyRequest.getStageVariables());
+//        setAttribute(API_GATEWAY_EVENT_PROPERTY, awsProxyRequest);
+//        if (requestContext != null) {
+//            setAttribute(ALB_CONTEXT_PROPERTY, requestContext.getElb());
+//        }
+//        setAttribute(LAMBDA_CONTEXT_PROPERTY, lambdaContext);
+//        setAttribute(JAX_SECURITY_CONTEXT_PROPERTY, config);
+//        if (isSecurityContextPresent (securityContext)) {
+//            setAttribute("micronaut.AUTHENTICATION", securityContext.getUserPrincipal());
+//        }
+//    }
 
     /**
      *
@@ -122,6 +115,11 @@ public class MicronautAwsProxyRequest<T> implements HttpRequest<T> {
                            return false;
             }
         }
+        if (securityContext instanceof AwsHttpApiV2SecurityContext) {
+            AwsHttpApiV2SecurityContext context =
+                (AwsHttpApiV2SecurityContext) securityContext;
+            return context.getUserPrincipal() != null;
+        }
         return true;
     }
 
@@ -130,9 +128,7 @@ public class MicronautAwsProxyRequest<T> implements HttpRequest<T> {
      *
      * @return The backing {@link AwsProxyRequest} object.
      */
-    public final AwsProxyRequest getAwsProxyRequest() {
-        return awsProxyRequest;
-    }
+    public abstract Req getUnderlyingProxyRequest();
 
     /**
      * @return The response object
@@ -157,75 +153,24 @@ public class MicronautAwsProxyRequest<T> implements HttpRequest<T> {
 
     @Override
     @NonNull
-    public Cookies getCookies() {
-        if (cookies == null) {
-            SimpleCookies simpleCookies = new SimpleCookies(ConversionService.SHARED);
-            getHeaders().getAll(HttpHeaders.COOKIE).forEach(cookieValue -> {
-                List<HeaderValue> parsedHeaders = parseHeaderValue(cookieValue, ";", ",");
-
-
-                parsedHeaders.stream()
-                        .filter(e -> e.getKey() != null)
-                        .map(e -> new SimpleCookie(SecurityUtils.crlf(e.getKey()), SecurityUtils.crlf(e.getValue())))
-                        .forEach(simpleCookie ->
-                                simpleCookies.put(simpleCookie.getName(), simpleCookie));
-            });
-
-            cookies = simpleCookies;
-        }
-        return cookies;
-    }
+    public abstract Cookies getCookies();
 
     @Override
     @NonNull
-    public HttpParameters getParameters() {
-        return parameters;
-    }
+    public abstract HttpParameters getParameters();
 
     @Override
     @NonNull
-    public HttpMethod getMethod() {
-        return httpMethod;
-    }
+    public abstract HttpMethod getMethod();
 
     @Override
     @NonNull
-    public URI getUri() {
-        String region = System.getenv("AWS_REGION");
-        if (region == null) {
-            // this is not a critical failure, we just put a static region in the URI
-            region = "us-east-1";
-        }
+    public abstract URI getUri();
 
-        final Headers multiValueHeaders = awsProxyRequest.getMultiValueHeaders();
-        String hostHeader = multiValueHeaders != null ? multiValueHeaders.getFirst(HttpHeaders.HOST) : null;
-        final AwsProxyRequestContext requestContext = awsProxyRequest.getRequestContext();
+    protected abstract String getScheme();
 
-        if (requestContext != null && !isValidHost(hostHeader, requestContext.getApiId(), region)) {
-            hostHeader = requestContext.getApiId() +
-                    ".execute-api." +
-                    region +
-                    ".amazonaws.com";
-        }
 
-        return URI.create(getScheme() + "://" + hostHeader + path);
-    }
-
-    @NonNull
-    @Override
-    public InetSocketAddress getRemoteAddress() {
-        AwsProxyRequestContext requestContext = this.awsProxyRequest.getRequestContext();
-        if (requestContext != null) {
-            ApiGatewayRequestIdentity identity = requestContext.getIdentity();
-            if (identity != null) {
-                final String sourceIp = identity.getSourceIp();
-                return new InetSocketAddress(sourceIp, 0);
-            }
-        }
-        return HttpRequest.super.getRemoteAddress();
-    }
-
-    private boolean isValidHost(String host, String apiId, String region) {
+    protected boolean isValidHost(String host, String apiId, String region) {
         if (host == null) {
             return false;
         }
@@ -313,78 +258,7 @@ public class MicronautAwsProxyRequest<T> implements HttpRequest<T> {
      * @param qualifierSeparator the qualifier separator
      * @return A list of SimpleMapEntry objects with all of the possible values for the header.
      */
-    protected List<HeaderValue> parseHeaderValue(
-            String headerValue, String valueSeparator, String qualifierSeparator) {
-        // Accept: text/html, application/xhtml+xml, application/xml;q=0.9, */*;q=0.8
-        // Accept-Language: fr-CH, fr;q=0.9, en;q=0.8, de;q=0.7, *;q=0.5
-        // Cookie: name=value; name2=value2; name3=value3
-        // X-Custom-Header: YQ==
 
-        List<HeaderValue> values = new ArrayList<>();
-        if (headerValue == null) {
-            return values;
-        }
-
-        for (String v : headerValue.split(valueSeparator)) {
-            String curValue = v;
-            float curPreference = 1.0f;
-            HeaderValue newValue = new HeaderValue();
-            newValue.setRawValue(v);
-
-            for (String q : curValue.split(qualifierSeparator)) {
-
-                String[] kv = q.split(HEADER_KEY_VALUE_SEPARATOR, 2);
-                String key = null;
-                String val = null;
-                // no separator, set the value only
-                if (kv.length == 1) {
-                    val = q.trim();
-                }
-                // we have a separator
-                if (kv.length == 2) {
-                    // if the length of the value is 0 we assume that we are looking at a
-                    // base64 encoded value with padding so we just set the value. This is because
-                    // we assume that empty values in a key/value pair will contain at least a white space
-                    if (kv[1].length() == 0) {
-                        val = q.trim();
-                    }
-                    // this was a base64 string with an additional = for padding, set the value only
-                    if ("=".equals(kv[1].trim())) {
-                        val = q.trim();
-                    } else { // it's a proper key/value set both
-                        key = kv[0].trim();
-                        val = ("".equals(kv[1].trim()) ? null : kv[1].trim());
-                    }
-                }
-
-                if (newValue.getValue() == null) {
-                    newValue.setKey(key);
-                    newValue.setValue(val);
-                } else {
-                    // special case for quality q=
-                    if ("q".equals(key)) {
-                        curPreference = Float.parseFloat(val);
-                    } else {
-                        newValue.addAttribute(key, val);
-                    }
-                }
-            }
-            newValue.setPriority(curPreference);
-            values.add(newValue);
-        }
-
-        // sort list by preference
-        values.sort((HeaderValue first, HeaderValue second) -> {
-            if ((first.getPriority() - second.getPriority()) < .001f) {
-                return 0;
-            }
-            if (first.getPriority() < second.getPriority()) {
-                return 1;
-            }
-            return -1;
-        });
-        return values;
-    }
 
     /**
      * The decoded body.
@@ -403,180 +277,4 @@ public class MicronautAwsProxyRequest<T> implements HttpRequest<T> {
         return decodedBody != null;
     }
 
-    private String getScheme() {
-        // if we don't have any headers to deduce the value we assume HTTPS - API Gateway's default
-        if (awsProxyRequest.getMultiValueHeaders() == null) {
-            return "https";
-        }
-        String cfScheme = awsProxyRequest.getMultiValueHeaders().getFirst(CF_PROTOCOL_HEADER_NAME);
-        if (cfScheme != null && SecurityUtils.isValidScheme(cfScheme)) {
-            return cfScheme;
-        }
-        String gwScheme = awsProxyRequest.getMultiValueHeaders().getFirst(PROTOCOL_HEADER_NAME);
-        if (gwScheme != null && SecurityUtils.isValidScheme(gwScheme)) {
-            return gwScheme;
-        }
-        // https is our default scheme
-        return "https";
-    }
-
-    /**
-     * Implementation of {@link HttpParameters} for AWS.
-     *
-     * @author graemerocher
-     * @since 1.1
-     */
-    private class AwsParameters implements HttpParameters {
-
-        private MultiValuedTreeMap<String, String> params = awsProxyRequest.getMultiValueQueryStringParameters();
-
-        @Override
-        public List<String> getAll(CharSequence name) {
-            if (StringUtils.isNotEmpty(name)) {
-                final List<String> strings = params.get(name.toString());
-                if (CollectionUtils.isNotEmpty(strings)) {
-                    return strings;
-                }
-            }
-            return Collections.emptyList();
-        }
-
-        @Nullable
-        @Override
-        public String get(CharSequence name) {
-            if (StringUtils.isNotEmpty(name)) {
-                return params.getFirst(name.toString());
-            }
-            return null;
-        }
-
-        @Override
-        public Set<String> names() {
-            return params.keySet();
-        }
-
-        @Override
-        public Collection<List<String>> values() {
-            return params.values();
-        }
-
-        @Override
-        public <T> Optional<T> get(CharSequence name, ArgumentConversionContext<T> conversionContext) {
-            final String v = get(name);
-            if (v != null) {
-                return ConversionService.SHARED.convert(v, conversionContext);
-            }
-            return Optional.empty();
-        }
-    }
-
-    /**
-     * Implementation of {@link HttpHeaders} for AWS.
-     */
-    private class AwsHeaders implements HttpHeaders {
-
-        private Headers multiValueHeaders = awsProxyRequest.getMultiValueHeaders();
-
-        @Override
-        public List<String> getAll(CharSequence name) {
-            if (StringUtils.isNotEmpty(name)) {
-                final List<String> strings = multiValueHeaders.get(name.toString());
-                if (CollectionUtils.isNotEmpty(strings)) {
-                    return strings;
-                }
-            }
-            return Collections.emptyList();
-        }
-
-        @Nullable
-        @Override
-        public String get(CharSequence name) {
-            if (StringUtils.isNotEmpty(name)) {
-                return multiValueHeaders.getFirst(name.toString());
-            }
-            return null;
-        }
-
-        @Override
-        public Set<String> names() {
-            return multiValueHeaders.keySet();
-        }
-
-        @Override
-        public Collection<List<String>> values() {
-            return multiValueHeaders.values();
-        }
-
-        @Override
-        public <T> Optional<T> get(CharSequence name, ArgumentConversionContext<T> conversionContext) {
-            final String v = get(name);
-            if (v != null) {
-                return ConversionService.SHARED.convert(v, conversionContext);
-            }
-            return Optional.empty();
-        }
-    }
-
-    /**
-     * Class that represents a header value.
-     */
-    private static class HeaderValue {
-        private String key;
-        private String value;
-        private String rawValue;
-        private float priority;
-        private Map<String, String> attributes;
-
-        public HeaderValue() {
-            attributes = new HashMap<>();
-        }
-
-        public String getKey() {
-            return key;
-        }
-
-        public void setKey(String key) {
-            this.key = key;
-        }
-
-        public String getValue() {
-            return value;
-        }
-
-        public void setValue(String value) {
-            this.value = value;
-        }
-
-        public String getRawValue() {
-            return rawValue;
-        }
-
-        public void setRawValue(String rawValue) {
-            this.rawValue = rawValue;
-        }
-
-        public float getPriority() {
-            return priority;
-        }
-
-        public void setPriority(float priority) {
-            this.priority = priority;
-        }
-
-        public Map<String, String> getAttributes() {
-            return attributes;
-        }
-
-        public void setAttributes(Map<String, String> attributes) {
-            this.attributes = attributes;
-        }
-
-        public void addAttribute(String key, String value) {
-            attributes.put(key, value);
-        }
-
-        public String getAttribute(String key) {
-            return attributes.get(key);
-        }
-    }
 }

@@ -1,24 +1,10 @@
-/*
- * Copyright 2017-2020 original authors
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * https://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
 package io.micronaut.function.aws.proxy;
 
 import com.amazonaws.serverless.exceptions.InvalidRequestEventException;
 import com.amazonaws.serverless.proxy.RequestReader;
 import com.amazonaws.serverless.proxy.model.AwsProxyRequest;
 import com.amazonaws.serverless.proxy.model.ContainerConfig;
+import com.amazonaws.serverless.proxy.model.HttpApiV2ProxyRequest;
 import com.amazonaws.services.lambda.runtime.Context;
 import io.micronaut.core.annotation.Internal;
 import io.micronaut.http.HttpAttributes;
@@ -38,40 +24,33 @@ import java.util.stream.Collectors;
 import static io.micronaut.http.HttpAttributes.AVAILABLE_HTTP_METHODS;
 import static io.micronaut.http.HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD;
 
-/**
- * Implementation of the {@link RequestReader} class for Micronaut.
- *
- * @author graemerocher
- * @since 1.1
- */
 @Internal
-class MicronautRequestReader extends RequestReader<AwsProxyRequest, MicronautAwsProxyRequest<AwsProxyRequest, ?>> {
+class MicronautHttpApiV2RequestReader extends RequestReader<HttpApiV2ProxyRequest, MicronautAwsProxyRequest<?>> {
 
     private final MicronautLambdaContainerContext environment;
-
     /**
      * Default constructor.
      *
      * @param environment The {@link MicronautLambdaContainerContext}
      */
-    MicronautRequestReader(MicronautLambdaContainerContext environment) {
+    MicronautHttpApiV2RequestReader(MicronautLambdaContainerContext environment) {
         this.environment = environment;
     }
-
     @Override
-    public MicronautAwsProxyRequest<AwsProxyRequest, ?> readRequest(
-            AwsProxyRequest request,
-            SecurityContext securityContext,
-            Context lambdaContext,
-            ContainerConfig config) throws InvalidRequestEventException {
+    public MicronautAwsProxyRequest<?> readRequest(
+        HttpApiV2ProxyRequest request,
+        SecurityContext securityContext,
+        Context lambdaContext,
+        ContainerConfig config) throws InvalidRequestEventException {
+
         try {
             final String path = config.isStripBasePath() ? stripBasePath(request.getPath(), config) : getPathNoBase(request);
-            final MicronautAwsProxyRequest<AwsProxyRequest, ?> containerRequest = new MicronautRestApiV1Request<>(
-                    path,
-                    request,
-                    securityContext,
-                    lambdaContext,
-                    config
+            final MicronautAwsProxyRequest<?> containerRequest = new MicronautHtt<>(
+                path,
+                request,
+                securityContext,
+                lambdaContext,
+                config
             );
 
             List<UriRouteMatch<Object, Object>> uriRoutes = environment.getRouter().findAllClosest(containerRequest);
@@ -94,15 +73,15 @@ class MicronautRequestReader extends RequestReader<AwsProxyRequest, MicronautAws
         }
     }
 
+    @Override
+    protected Class<? extends HttpApiV2ProxyRequest> getRequestClass() {
+        return HttpApiV2ProxyRequest.class;
+    }
+
     static boolean isPreflightRequest(HttpRequest<?> request) {
         HttpHeaders headers = request.getHeaders();
         Optional<String> origin = headers.getOrigin();
         return origin.isPresent() && headers.contains(ACCESS_CONTROL_REQUEST_METHOD) && HttpMethod.OPTIONS == request.getMethod();
-    }
-
-    @Override
-    protected Class<? extends AwsProxyRequest> getRequestClass() {
-        return AwsProxyRequest.class;
     }
 
     private static String getPathNoBase(AwsProxyRequest request) {
